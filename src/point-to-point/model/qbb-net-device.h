@@ -144,12 +144,12 @@ public:
 
    //Ptr<Node> m_node;
 
-   bool TransmitStart (Ptr<Packet> p);
+   bool TransmitStart (Ptr<Packet> p, Ptr<RdmaQueuePair> lastQp);
 
    virtual void DoDispose(void);
 
    /// Reset the channel into READY state and try transmit again
-   virtual void TransmitComplete(void);
+   virtual void TransmitComplete(Ptr<RdmaQueuePair> qp);
 
    /// Look for an available packet and send it using TransmitStart(p)
    virtual void DequeueAndTransmit(void);

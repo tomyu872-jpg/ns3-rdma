@@ -8,6 +8,8 @@
 
 #include "qbb-net-device.h"
 #include "switch-mmu.h"
+const int mp_count=4;
+const int PACKET_SIZE=8192;
 
 namespace ns3 {
 

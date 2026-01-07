@@ -34,11 +34,11 @@ enum CcMode {
 
 class IrnSackManager {
    private:
-    std::list<std::pair<uint32_t, uint32_t>> m_data;
+    // std::list<std::pair<uint32_t, uint32_t>> m_data;
 
    public:
     int socketId{-1};
-
+    std::list<std::pair<uint32_t, uint32_t>> m_data;
     IrnSackManager();
     IrnSackManager(int flow_id);
     void sack(uint32_t seq, uint32_t size);  // put blocks
@@ -53,6 +53,7 @@ class IrnSackManager {
 
 class RdmaQueuePair : public Object {
    public:
+    bool resend_mode;
     Time startTime;
     Ipv4Address sip, dip;
     uint16_t sport, dport;
@@ -196,6 +197,11 @@ class RdmaRxQueuePair : public Object {  // Rx side queue pair
 
         ECNAccount() { memset(this, 0, sizeof(ECNAccount)); }
     };
+    uint32_t last_exseq=0;//防止对于同一个丢包重传
+    uint32_t nack_times=0;
+    uint32_t last_seq=0;
+    bool m_firstExpectSeen = false;//第一次丢包只记录
+
     ECNAccount m_ecn_source;
     uint32_t sip, dip;
     uint16_t sport, dport;

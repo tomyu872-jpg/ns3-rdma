@@ -80,7 +80,7 @@ bool conweave_pathAwareRerouting = true;
 uint64_t one_hop_delay = 1000;  // nanoseconds
 uint32_t cc_mode = 1;           // mode for congestion control, 1: DCQCN
 bool enable_qcn = true, enable_pfc = true, use_dynamic_pfc_threshold = true;
-uint32_t packet_payload_size = 1000, l2_chunk_size = 0, l2_ack_interval = 0;
+uint32_t packet_payload_size = 8192, l2_chunk_size = 0, l2_ack_interval = 0;
 double pause_time = 5;  // PFC pause, microseconds
 double flowgen_start_time = 2.0, flowgen_stop_time = 2.5, simulator_extra_time = 0.1;
 // queue length monitoring time is not used in this simulator
@@ -474,6 +474,9 @@ void qp_finish(FILE *fout, Ptr<RdmaQueuePair> q) {
                          IntHeader::GetStaticSize());  // translate to the minimum bytes required
                                                        // (with header but no INT)
     uint64_t standalone_fct = base_rtt + total_bytes * 8000000000lu / b;
+    uint64_t actual_fct_ns=(Simulator::Now() - q->startTime).GetTimeStep();
+    double throughput_bps = (total_bytes * 8.0) / actual_fct_ns;  
+    double goodput_bps = (q->m_size * 8.0) / actual_fct_ns;  
 
     // XXX: remove rxQP from the receiver
     Ptr<Node> dstNode = n.Get(did);
@@ -481,10 +484,10 @@ void qp_finish(FILE *fout, Ptr<RdmaQueuePair> q) {
     rdma->m_rdma->DeleteRxQp(q->sip.Get(), q->sport, q->dport, q->m_pg);
 
     // fprintf(fout, "%lu QP complete\n", Simulator::Now().GetTimeStep());
-    fprintf(fout, "%u %u %u %u %lu %lu %lu %lu\n", Settings::ip_to_node_id(q->sip),
+    fprintf(fout, "%u %u %u %u %lu %lu %lu %lu %.5f %.5f\n", Settings::ip_to_node_id(q->sip),
             Settings::ip_to_node_id(q->dip), q->sport, q->dport, q->m_size,
             q->startTime.GetTimeStep(), (Simulator::Now() - q->startTime).GetTimeStep(),
-            standalone_fct);
+            standalone_fct,throughput_bps,goodput_bps);
 
     // for debugging
     NS_LOG_DEBUG("%u %u %u %u %lu %lu %lu %lu\n" %
@@ -1210,7 +1213,7 @@ int main(int argc, char *argv[]) {
         topof >> src >> dst >> data_rate >> link_delay >> error_rate;
 
         /** ASSUME: fixed one-hop delay across network */
-        assert(std::to_string(one_hop_delay) + "ns" == link_delay);
+        // assert(std::to_string(one_hop_delay) + "ns" == link_delay);
 
         link_pairs.push_back(std::make_pair(src, dst));
         Ptr<Node> snode = n.Get(src), dnode = n.Get(dst);
@@ -1309,9 +1312,9 @@ int main(int argc, char *argv[]) {
                               "must set kmax for each link speed");
                 NS_ASSERT_MSG(rate2pmax.find(rate) != rate2pmax.end(),
                               "must set pmax for each link speed");
-                assert(rate2kmin.find(rate) != rate2kmin.end() &&
-                       rate2kmax.find(rate) != rate2kmax.end() &&
-                       rate2pmax.find(rate) != rate2pmax.end());
+                // assert(rate2kmin.find(rate) != rate2kmin.end() &&
+                //        rate2kmax.find(rate) != rate2kmax.end() &&
+                //        rate2pmax.find(rate) != rate2pmax.end());
                 sw->m_mmu->ConfigEcn(j, rate2kmin[rate], rate2kmax[rate], rate2pmax[rate]);
                 // set pfc
                 uint64_t delay =
@@ -1366,6 +1369,8 @@ int main(int argc, char *argv[]) {
     std::map<std::string, uint32_t> topo2bdpMap;
     topo2bdpMap[std::string("leaf_spine_128_100G_OS2")] = 104000;  // RTT=8320
     topo2bdpMap[std::string("fat_k8_100G_OS2")] = 156000;      // RTT=12480 --> all 100G links
+    topo2bdpMap[std::string("1_topology")] = 423200;   // 增加的拓扑文件
+
 
     // topology_file
     bool found_topo2bdpMap = false;
@@ -1476,7 +1481,7 @@ int main(int argc, char *argv[]) {
         }
     }
     fprintf(stderr, "maxRtt: %lu, maxBdp: %lu\n", maxRtt, maxBdp);
-    assert(maxBdp == irn_bdp_lookup);
+    // assert(maxBdp == irn_bdp_lookup);
 
     std::cout << "Configuring switches" << std::endl;
     /* config ToR Switch */

@@ -40,7 +40,7 @@ TypeId RdmaHw::GetTypeId(void) {
             .AddAttribute("CcMode", "which mode of DCQCN is running", UintegerValue(0),
                           MakeUintegerAccessor(&RdmaHw::m_cc_mode), MakeUintegerChecker<uint32_t>())
             .AddAttribute("NACKGenerationInterval", "The NACK/CNP Generation interval",
-                          DoubleValue(4.0), MakeDoubleAccessor(&RdmaHw::m_nack_interval),
+                          DoubleValue(50.0), MakeDoubleAccessor(&RdmaHw::m_nack_interval),
                           MakeDoubleChecker<double>())
             .AddAttribute("L2ChunkSize", "Layer 2 chunk size. Disable chunk mode if equals to 0.",
                           UintegerValue(4000), MakeUintegerAccessor(&RdmaHw::m_chunk),
@@ -326,8 +326,8 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch) {
 
     bool cnp_check = false;
     int x = ReceiverCheckSeq(ch.udp.seq, rxQp, payload_size, cnp_check);
-
     if (x == 1 || x == 2 || x == 6) {  // generate ACK or NACK
+        // std::cout<<"返回包中的期望序号："<<rxQp->ReceiverNextExpectedSeq<<std::endl;
         qbbHeader seqh;
         seqh.SetSeq(rxQp->ReceiverNextExpectedSeq);
         seqh.SetPG(ch.udp.pg);
@@ -441,9 +441,11 @@ int RdmaHw::ReceiveCnp(Ptr<Packet> p, CustomHeader &ch) {
 
 int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch) {
     uint16_t qIndex = ch.ack.pg;
+    uint32_t sack_seq, sack_len;
     uint16_t port = ch.ack.dport;   // sport for this host
     uint16_t sport = ch.ack.sport;  // dport for this host (sport of ACK packet)
     uint32_t seq = ch.ack.seq;
+    // std::cout << "接收端的seq"<<seq<<std::endl;
     uint8_t cnp = (ch.ack.flags >> qbbHeader::FLAG_CNP) & 1;
     int i;
     uint64_t key = GetQpKey(ch.sip, port, sport, qIndex);
@@ -481,22 +483,23 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch) {
             if (seq > qp->irn.m_highest_ack) qp->irn.m_highest_ack = seq;
 
             if (ch.ack.irnNackSize != 0) {
+                // std::cout<<"ch.ack.irnNack:"<<ch.ack.irnNack<<std::endl;
                 // ch.ack.irnNack contains the seq triggered this NACK
                 qp->irn.m_sack.sack(ch.ack.irnNack, ch.ack.irnNackSize);
             }
 
-            uint32_t sack_seq, sack_len;
             if (qp->irn.m_sack.peekFrontBlock(&sack_seq, &sack_len)) {
                 if (qp->snd_una == sack_seq) {
                     qp->snd_una += sack_len;
                 }
             }
-
+            // std::cout<<"qp->snd_una:"<<qp->snd_una<<std::endl;
             qp->irn.m_sack.discardUpTo(qp->snd_una);
 
             if (qp->snd_nxt < qp->snd_una) {
                 qp->snd_nxt = qp->snd_una;
             }
+            //std::cout<<"qp->irn.m_recovery:"<<qp->irn.m_recovery<<std::endl;
             // if (qp->irn.m_sack.IsEmpty())  { //
             if (qp->irn.m_recovery && qp->snd_una >= qp->irn.m_recovery_seq) {
                 qp->irn.m_recovery = false;
@@ -529,8 +532,10 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch) {
 
     if (m_irn) {
         if (ch.ack.irnNackSize != 0) {
-            if (!qp->irn.m_recovery) {
+            if (!qp->irn.m_recovery) {//不是重传模式进入
                 qp->irn.m_recovery_seq = qp->snd_nxt;
+                //std::cout<<"qp->irn.m_recovery_seq:"<<qp->irn.m_recovery_seq<<std::endl; 
+                //std::cout<<"qp->snd_una:"<<qp->snd_una<<std::endl;          
                 RecoverQueue(qp);
                 qp->irn.m_recovery = true;
             }
@@ -557,6 +562,8 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch) {
     } else if (m_cc_mode == 8) {
         HandleAckDctcp(qp, p, ch);
     }
+
+    //std::cout<<"ack中qp->snd_nxt:"<<qp->snd_nxt<<std::endl;   
     // ACK may advance the on-the-fly window, allowing more packets to send
     dev->TriggerTransmit();
     return 0;
@@ -571,17 +578,22 @@ size_t RdmaHw::getIrnBufferOverhead() {
 }
 
 int RdmaHw::Receive(Ptr<Packet> p, CustomHeader &ch) {
+        //std::cout << "接受时间: " 
+        //   << Simulator::Now().GetNanoSeconds() 
+        //   << " ns" << std::endl;
     // #if (SLB_DEBUG == true)
     //     std::cout << "[RdmaHw::Receive] Node(" << m_node->GetId() << ")," << PARSE_FIVE_TUPLE(ch)
     //     << "l3Prot:" << ch.l3Prot << ",at" << Simulator::Now() << std::endl;
     // #endif
     if (ch.l3Prot == 0x11) {  // UDP
+        //std::cout<<"调用RdmaHw::Receive检测到数据包为UDP"<<std::endl;
         return ReceiveUdp(p, ch);
     } else if (ch.l3Prot == 0xFF) {  // CNP
         return ReceiveCnp(p, ch);
     } else if (ch.l3Prot == 0xFD) {  // NACK
         return ReceiveAck(p, ch);
     } else if (ch.l3Prot == 0xFC) {  // ACK
+        //std::cout<<"调用RdmaHw::Receive检测到数据包为ACK"<<std::endl;
         return ReceiveAck(p, ch);
     }
     return 0;
@@ -597,8 +609,21 @@ int RdmaHw::Receive(Ptr<Packet> p, CustomHeader &ch) {
  * 4: OoO, but skip to send NACK as it is already NACKed.
  * 6: NACK but functionality is ACK (indicating all packets are received)
  */
-int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size, bool &cnp) {
+
+
+int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size, bool &cnp) {//原始的
     uint32_t expected = q->ReceiverNextExpectedSeq;
+    // if(q->m_flow_id==1){
+    //     std::cout<<q->m_flow_id<<"号流expected:"<<expected<<std::endl;
+    // }
+    // if(seq!=q->last_seq+PACKET_SIZE){
+    //     q->nack_times++;
+    //     std::cout<<"nack_times:"<<q->nack_times<<std::endl;
+    // }
+    // q->last_seq=seq;
+    // if(q->m_flow_id==1){
+    //     std::cout<<q->m_flow_id<<"号流收到的seq:"<<seq<<std::endl;
+    // }
     if (seq == expected || (seq < expected && seq + size >= expected)) {
         if (m_irn) {
             if (q->m_milestone_rx < seq + size) q->m_milestone_rx = seq + size;
@@ -606,6 +631,7 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
             {
                 uint32_t sack_seq, sack_len;
                 if (q->m_irn_sack_.peekFrontBlock(&sack_seq, &sack_len)) {
+                    std::cout<<"sack_seq:"<<sack_seq<<",sack_len:"<<sack_len<<std::endl;
                     if (sack_seq <= q->ReceiverNextExpectedSeq)
                         q->ReceiverNextExpectedSeq +=
                             (sack_len - (q->ReceiverNextExpectedSeq - sack_seq));
@@ -635,14 +661,26 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
     } else if (seq > expected) {
         // Generate NACK
         if (m_irn) {
-            if (q->m_milestone_rx < seq + size) q->m_milestone_rx = seq + size;
-
-            // if seq is already nacked, check for nacktimer
-            if (q->m_irn_sack_.blockExists(seq, size) && Simulator::Now() < q->m_nackTimer) {
-                return 4;  // don't need to send nack yet
-            }
-            q->m_nackTimer = Simulator::Now() + MicroSeconds(m_nack_interval);
+            //std::cout<<"有丢包"<<std::endl;
             q->m_irn_sack_.sack(seq, size);  // set SACK
+            //std::cout<<"乱序造成的丢包"<<std::endl;
+            if (q->m_milestone_rx < seq + size) q->m_milestone_rx = seq + size;
+            //std::cout<<"现在时间："<<Simulator::Now()<<std::endl;
+            //std::cout<<"q->m_nackTimer:"<<q->m_nackTimer<<std::endl;
+            // if seq is already nacked, check for nacktimer
+            if(!q->m_firstExpectSeen){
+                q->last_exseq=expected;
+                q->m_firstExpectSeen=true;
+            }else if(q->last_exseq==expected&&Simulator::Now() < q->m_nackTimer){
+                return 4;
+            }
+            q->last_exseq=expected;
+            q->nack_times++;
+            std::cout<<"nack_times:"<<q->nack_times<<std::endl;
+            // if (q->m_irn_sack_.blockExists(seq, size) && Simulator::Now() < q->m_nackTimer) {
+            //     return 4;  // don't need to send nack yet
+            // }
+            q->m_nackTimer = Simulator::Now() + MicroSeconds(m_nack_interval);
             NS_ASSERT(q->m_irn_sack_.discardUpTo(expected) ==
                       0);  // SACK blocks must be larger than expected
             cnp = true;    // XXX: out-of-order should accompany with CNP (?) TODO: Check on CX6
@@ -671,6 +709,7 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
                 return 6;  // This generates NACK, but actually functions as an ACK (indicates all
                            // packet has been received)
             } else {
+                //std::cout<<"超出位图范围的包"<<std::endl;
                 // should we put nack timer here
                 return 2;  // Still in loss recovery mode of IRN
             }
@@ -757,7 +796,20 @@ Ptr<Packet> RdmaHw::GetNxtPacket(Ptr<RdmaQueuePair> qp) {
     if (m_mtu < payload_size) {  // possibly last packet
         payload_size = m_mtu;
     }
+    uint64_t now_time = Simulator::Now().GetNanoSeconds();     
+
+    if (now_time > last_record_time + 1000) {
+    std::cout << "发送时间大于1000" << std::endl;
+    }
+    last_record_time = now_time; // 更新上一次记录时间
+    
+    if(qp->irn.m_recovery){
+        qp->resend_mode=true;
+    }
+
     uint32_t seq = (uint32_t)qp->snd_nxt;
+    // std::cout<<"发送的seq:"<<seq<<std::endl;
+
     bool proceed_snd_nxt = true;
     qp->stat.txTotalPkts += 1;
     qp->stat.txTotalBytes += payload_size;
@@ -853,6 +905,8 @@ void RdmaHw::PktSent(Ptr<RdmaQueuePair> qp, Ptr<Packet> pkt, Time interframeGap)
 }
 
 void RdmaHw::HandleTimeout(Ptr<RdmaQueuePair> qp, Time rto) {
+
+        std::cout<<"触发了超时重传"<<std::endl;
     // Assume Outstanding Packets are lost
     // std::cerr << "Timeout on qp=" << qp << std::endl;
     if (qp->IsFinished()) {
@@ -872,6 +926,8 @@ void RdmaHw::HandleTimeout(Ptr<RdmaQueuePair> qp, Time rto) {
     if (qp->irn.m_enabled) qp->irn.m_recovery = true;
 
     RecoverQueue(qp);
+    //std::cout<<"超时重传"<<std::endl;
+    //std::cout<<"qp->snd_nxt:"<<qp->snd_nxt<<std::endl; 
     dev->TriggerTransmit();
 }
 

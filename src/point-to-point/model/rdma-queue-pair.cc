@@ -91,12 +91,28 @@ void RdmaQueuePair::SetFlowId(int32_t v) {
 
 void RdmaQueuePair::SetTimeout(Time v) { m_timeout = v; }
 
+// uint64_t RdmaQueuePair::GetBytesLeft() {
+//     if (irn.m_enabled) {
+//         uint32_t sack_seq, sack_sz;
+//         if (irn.m_sack.peekFrontBlock(&sack_seq, &sack_sz)) {
+//             if (snd_nxt == sack_seq) {
+//                 snd_nxt += sack_sz;
+//                 irn.m_sack.discardUpTo(snd_nxt);
+//             }
+//         }
+//     }
+
+//     return m_size >= snd_nxt ? m_size - snd_nxt : 0;
+// }
+
 uint64_t RdmaQueuePair::GetBytesLeft() {
     if (irn.m_enabled) {
         uint32_t sack_seq, sack_sz;
         if (irn.m_sack.peekFrontBlock(&sack_seq, &sack_sz)) {
             if (snd_nxt == sack_seq) {
-                snd_nxt += sack_sz;
+                if(irn.m_recovery){
+                    snd_nxt=irn.m_recovery_seq;
+                }
                 irn.m_sack.discardUpTo(snd_nxt);
             }
         }
@@ -218,8 +234,17 @@ RdmaQueuePairGroup::RdmaQueuePairGroup(void) { memset(m_qp_finished, 0, sizeof(m
 
 uint32_t RdmaQueuePairGroup::GetN(void) { return m_qps.size(); }
 
-Ptr<RdmaQueuePair> RdmaQueuePairGroup::Get(uint32_t idx) { return m_qps[idx]; }
-
+// Ptr<RdmaQueuePair> RdmaQueuePairGroup::Get(uint32_t idx) { return m_qps[idx]; }
+Ptr<RdmaQueuePair> 
+RdmaQueuePairGroup::Get(uint32_t idx) 
+{
+    if (idx >= m_qps.size()) {
+        NS_LOG_ERROR("RdmaQueuePairGroup::Get() invalid index " 
+                     << idx << ", valid range: [0, " << m_qps.size() - 1 << "]");
+        return nullptr;
+    }
+    return m_qps[idx];
+}
 Ptr<RdmaQueuePair> RdmaQueuePairGroup::operator[](uint32_t idx) { return m_qps[idx]; }
 
 void RdmaQueuePairGroup::AddQp(Ptr<RdmaQueuePair> qp) { m_qps.push_back(qp); }

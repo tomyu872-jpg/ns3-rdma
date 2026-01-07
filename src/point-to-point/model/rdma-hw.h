@@ -26,7 +26,7 @@ class RdmaHw : public Object {
    public:
     static TypeId GetTypeId(void);
     RdmaHw();
-
+    uint64_t last_record_time=0; //记录时间
     Ptr<Node> m_node;
     DataRate m_minRate;  //< Min sending rate
     uint32_t m_mtu;

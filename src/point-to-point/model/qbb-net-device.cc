@@ -115,8 +115,13 @@ int RdmaEgressQueue::GetNextQindex(bool paused[]) {
         bool cond1 = !paused[qp->m_pg];
         bool cond_window_allowed =
             (!qp->IsWinBound() && (!qp->irn.m_enabled || qp->CanIrnTransmit(m_mtu)));
+        // std::cout<<"cond_window_allowed："<<cond_window_allowed<<std::endl;
+        // std::cout<<"qp->IsWinBound():"<<qp->IsWinBound()<<std::endl;
+        // std::cout<<"qp->irn.m_enabled:"<<qp->irn.m_enabled<<std::endl;
+        // std::cout<<"qp->CanIrnTransmit(m_mtu):"<<qp->CanIrnTransmit(m_mtu)<<std::endl;
+        // std::cout<<"qp->GetBytesLeft():"<<qp->GetBytesLeft()<<std::endl;
         bool cond2 = (qp->GetBytesLeft() > 0 && cond_window_allowed);
-
+        // std::cout<<"cond1:"<<cond1<<std::endl;
         if (!cond2 && !m_qpGrp->IsQpFinished((qIndex + m_rrlast) % fcount)) {
             if (qp->IsFinishedConst()) {
                 m_qpGrp->SetQpFinished((qIndex + m_rrlast) % fcount);
@@ -133,9 +138,11 @@ int RdmaEgressQueue::GetNextQindex(bool paused[]) {
                     current_pause_time[flowid] = Simulator::Now();
             }
         } else if (cond1 && cond2) {
-            if (m_qpGrp->Get((qIndex + m_rrlast) % fcount)->m_nextAvail.GetTimeStep() >
-                Simulator::Now().GetTimeStep())  // not available now
-                continue;
+            // if (m_qpGrp->Get((qIndex + m_rrlast) % fcount)->m_nextAvail.GetTimeStep() >
+            //     Simulator::Now().GetTimeStep())  // not available now
+            //     {
+            //         std::cout<<"qp不允许发送"<<std::endl;
+            //         continue;}
             // Check if the flow has been blocked by PFC
             {
                 int32_t flowid = m_qpGrp->Get((qIndex + m_rrlast) % fcount)->m_flow_id;
@@ -163,8 +170,14 @@ uint32_t RdmaEgressQueue::GetNBytes(uint32_t qIndex) {
 
 uint32_t RdmaEgressQueue::GetFlowCount(void) { return m_qpGrp->GetN(); }
 
-Ptr<RdmaQueuePair> RdmaEgressQueue::GetQp(uint32_t i) { return m_qpGrp->Get(i); }
-
+// Ptr<RdmaQueuePair> RdmaEgressQueue::GetQp(uint32_t i) { return m_qpGrp->Get(i); }
+Ptr<RdmaQueuePair> RdmaEgressQueue::GetQp(uint32_t i) { 
+    if (m_qpGrp == nullptr) {
+        NS_LOG_WARN("RdmaEgressQueue::GetQp called but m_qpGrp is null!");
+        return nullptr;
+    }
+    return m_qpGrp->Get(i);
+}
 void RdmaEgressQueue::RecoverQueue(uint32_t i) {
     NS_ASSERT_MSG(i < m_qpGrp->GetN(), "RdmaEgressQueue::RecoverQueue: qIndex >= m_qpGrp->GetN()");
     m_qpGrp->Get(i)->snd_nxt = m_qpGrp->Get(i)->snd_una;
@@ -242,13 +255,44 @@ void QbbNetDevice::DoDispose() {
     PointToPointNetDevice::DoDispose();
 }
 
-void QbbNetDevice::TransmitComplete(void) {
+// void QbbNetDevice::TransmitComplete(void) {
+//     NS_LOG_FUNCTION(this);
+//     NS_ASSERT_MSG(m_txMachineState == BUSY, "Must be BUSY if transmitting");
+//     m_txMachineState = READY;
+//     NS_ASSERT_MSG(m_currentPkt != 0, "QbbNetDevice::TransmitComplete(): m_currentPkt zero");
+//     m_phyTxEndTrace(m_currentPkt);
+//     m_currentPkt = 0;
+//     if (m_rdmaEQ != nullptr) {//在收到nack之后只发送一个丢的包
+//     for (uint32_t i = 0; i < 30; i++) {
+//         Ptr<RdmaQueuePair> qp = m_rdmaEQ->GetQp(i);
+//             if (qp != nullptr) {
+//                 if (qp->resend_mode) {
+//                     qp->irn.m_recovery=false;
+//                     qp->snd_nxt=qp->irn.m_recovery_seq;
+//                     qp->resend_mode=false;
+//                     std::cout<<"丢包重新发送"<<std::endl;
+//                 }
+//             }
+//         }
+//     }
+//     DequeueAndTransmit();
+// }
+
+void QbbNetDevice::TransmitComplete(Ptr<RdmaQueuePair> qp) {
     NS_LOG_FUNCTION(this);
     NS_ASSERT_MSG(m_txMachineState == BUSY, "Must be BUSY if transmitting");
     m_txMachineState = READY;
     NS_ASSERT_MSG(m_currentPkt != 0, "QbbNetDevice::TransmitComplete(): m_currentPkt zero");
     m_phyTxEndTrace(m_currentPkt);
     m_currentPkt = 0;
+    if (qp != nullptr) {
+        if (qp->resend_mode) {
+            qp->irn.m_recovery=false;
+            qp->snd_nxt=qp->irn.m_recovery_seq;
+            qp->resend_mode=false;
+            // std::cout<<"丢包重新发送"<<std::endl;
+        }
+    }
     DequeueAndTransmit();
 }
 
@@ -263,7 +307,8 @@ void QbbNetDevice::DequeueAndTransmit(void) {
             if (qIndex == -1) {  // high prio
                 p = m_rdmaEQ->DequeueQindex(qIndex);
                 m_traceDequeue(p, 0);
-                TransmitStart(p);
+                Ptr<RdmaQueuePair> lastQp = m_rdmaEQ->GetQp(qIndex);
+                TransmitStart(p, lastQp);
                 return;
             }
             // a qp dequeue a packet
@@ -272,7 +317,7 @@ void QbbNetDevice::DequeueAndTransmit(void) {
 
             // transmit
             m_traceQpDequeue(p, lastQp);
-            TransmitStart(p);
+            TransmitStart(p, lastQp);
 
             // update for the next avail time
             m_rdmaPktSent(lastQp, p, m_tInterframeGap);
@@ -313,7 +358,8 @@ void QbbNetDevice::DequeueAndTransmit(void) {
                 p->RemovePacketTag(t);
             }
             m_traceDequeue(p, qIndex);
-            TransmitStart(p);
+            Ptr<RdmaQueuePair> lastQp = nullptr; 
+            TransmitStart(p, lastQp);
             return;
         } else {  // No queue can deliver any packet
             NS_LOG_INFO("PAUSE prohibits send at node " << m_node->GetId());
@@ -347,6 +393,7 @@ void QbbNetDevice::Resume(unsigned qIndex) {
 }
 
 void QbbNetDevice::Receive(Ptr<Packet> packet) {
+    std::cout << m_node->GetId()<<"节点调用QbbNetDevice::Receive开始接受数据包" << std::endl;
     NS_LOG_FUNCTION(this << packet);
     if (!m_linkUp) {
         m_traceDrop(packet, 0);
@@ -436,7 +483,7 @@ bool QbbNetDevice::Attach(Ptr<QbbChannel> ch) {
     return true;
 }
 
-bool QbbNetDevice::TransmitStart(Ptr<Packet> p) {
+bool QbbNetDevice::TransmitStart(Ptr<Packet> p, Ptr<RdmaQueuePair> lastQp) {
     NS_LOG_FUNCTION(this << p);
     NS_LOG_LOGIC("UID is " << p->GetUid() << ")");
     //
@@ -450,8 +497,13 @@ bool QbbNetDevice::TransmitStart(Ptr<Packet> p) {
     m_phyTxBeginTrace(m_currentPkt);
     Time txTime = Seconds(m_bps.CalculateTxTime(p->GetSize()));
     Time txCompleteTime = txTime + m_tInterframeGap;
+    // std::cout<<"完成时间："<<txCompleteTime.GetNanoSeconds()<<std::endl;
     NS_LOG_LOGIC("Schedule TransmitCompleteEvent in " << txCompleteTime.GetSeconds() << "sec");
-    Simulator::Schedule(txCompleteTime, &QbbNetDevice::TransmitComplete, this);
+    Simulator::Schedule(
+        txCompleteTime,
+        MakeEvent(&QbbNetDevice::TransmitComplete, this, lastQp)
+    );
+
 
     bool result = m_channel->TransmitStart(p, this, txTime);
     if (result == false) {
